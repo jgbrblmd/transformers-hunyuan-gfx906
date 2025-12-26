@@ -1011,7 +1011,9 @@ class HunYuanVLForConditionalGeneration(HunYuanVLPreTrainedModel, GenerationMixi
             image_mask, _ = self.get_placeholder_mask(
                 input_ids, inputs_embeds=inputs_embeds, image_features=image_embeds
             )
-            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+            # Move to CPU for ROCm compatibility (masked_scatter has kernel issues)
+            device_original = inputs_embeds.device
+            inputs_embeds = inputs_embeds.cpu().masked_scatter(image_mask.cpu(), image_embeds.cpu()).to(device_original)
 
         return super().generate(
             inputs=input_ids,
@@ -1043,10 +1045,16 @@ class HunYuanVLForConditionalGeneration(HunYuanVLPreTrainedModel, GenerationMixi
 
         n_image_tokens = special_image_mask.sum()
         special_image_mask = special_image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
-        if image_features is not None and inputs_embeds[special_image_mask].numel() != image_features.numel():
-            raise ValueError(
-                f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {image_features.shape[0]}"
-            )
+        if image_features is not None:
+            # Move to CPU for ROCm compatibility, then back to GPU
+            inputs_embeds_cpu = inputs_embeds.cpu()
+            special_image_mask_cpu = special_image_mask.cpu()
+            selected_embeds = inputs_embeds_cpu[special_image_mask_cpu]
+            del inputs_embeds_cpu, special_image_mask_cpu
+            if selected_embeds.numel() != image_features.numel():
+                raise ValueError(
+                    f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {image_features.shape[0]}"
+                )
 
         return special_image_mask, None
 

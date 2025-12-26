@@ -1814,13 +1814,15 @@ class GenerationMixin(ContinuousMixin):
         if "cache_position" in model_kwargs and model_kwargs["cache_position"] is not None:
             return model_kwargs
         if "inputs_embeds" in model_kwargs and not self.config.is_encoder_decoder:
-            cache_position = torch.ones_like(model_kwargs["inputs_embeds"][0, :, 0], dtype=torch.int64).cumsum(0) - 1
+            # Use torch.arange for ROCm compatibility
+            seq_len = model_kwargs["inputs_embeds"].shape[1]
+            cache_position = torch.arange(seq_len, dtype=torch.int64, device=device)
         elif "decoder_inputs_embeds" in model_kwargs and self.config.is_encoder_decoder:
-            cache_position = (
-                torch.ones_like(model_kwargs["decoder_inputs_embeds"][0, :, 0], dtype=torch.int64).cumsum(0) - 1
-            )
+            # Use torch.arange for ROCm compatibility
+            seq_len = model_kwargs["decoder_inputs_embeds"].shape[1]
+            cache_position = torch.arange(seq_len, dtype=torch.int64, device=device)
         else:
-            cache_position = torch.ones(seq_length, dtype=torch.int64, device=device).cumsum(0) - 1
+            cache_position = torch.arange(seq_length, dtype=torch.int64, device=device)
 
         past_length = 0
         if model_kwargs.get("past_key_values") is not None:
