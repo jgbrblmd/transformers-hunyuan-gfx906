@@ -472,8 +472,38 @@ def apply_rotary_pos_emb_xdrope(q, k, cos, sin, position_ids, xdrope_section, ou
     """
     x_dim = len(xdrope_section)
 
-    # Handle position_ids: [batch, seq_len] -> select cos/sin
-    batch_size, seq_len = position_ids.shape
+    # Handle different position_ids shapes
+    # position_ids could be [seq_len], [batch, seq_len], [batch, 1], or [batch, 4, seq_len] (XD RoPE specific)
+    if position_ids.dim() == 3 and position_ids.shape[1] == 4:
+        # Special case: [batch, 4, seq_len] for XD RoPE
+        # Use the first channel or average
+        position_ids = position_ids[:, 0, :]  # [batch, seq_len]
+
+    if position_ids.dim() > 2:
+        # Flatten extra dimensions
+        position_ids = position_ids.view(position_ids.shape[0], -1)
+        if position_ids.shape[1] == 1:
+            position_ids = position_ids.squeeze(-1)
+
+    if position_ids.dim() == 1:
+        # [seq_len] -> [1, seq_len]
+        position_ids = position_ids.unsqueeze(0)
+
+    # Get batch_size and seq_len from position_ids
+    # Handle both [batch, seq_len] and [batch, 1] cases
+    if position_ids.dim() == 2:
+        if position_ids.shape[1] == 1:
+            # Generation case: [batch, 1] - we need to handle this specially
+            batch_size = position_ids.shape[0]
+            seq_len = 1
+            # For generation, we'll use the last position_id for all positions
+            position_ids = position_ids.squeeze(-1)  # [batch]
+        else:
+            # Training case: [batch, seq_len]
+            batch_size, seq_len = position_ids.shape
+    else:
+        # Fallback
+        batch_size, seq_len = position_ids.shape[-2:]
 
     # Expand cos/sin for batch dimension and select by position_ids
     # cos: [seq_len, head_dim] -> [batch, seq_len, head_dim]
@@ -481,7 +511,14 @@ def apply_rotary_pos_emb_xdrope(q, k, cos, sin, position_ids, xdrope_section, ou
     sin_expanded = sin.unsqueeze(0).expand(batch_size, -1, -1)
 
     # Gather based on position_ids
-    position_ids_expanded = position_ids.unsqueeze(-1)  # [batch, seq_len, 1]
+    if position_ids.dim() == 1:
+        # [batch] - generation case
+        position_ids_expanded = position_ids.unsqueeze(-1).unsqueeze(-1)  # [batch, 1, 1]
+        position_ids_expanded = position_ids_expanded.expand(-1, seq_len, -1)  # [batch, seq_len, 1]
+    else:
+        # [batch, seq_len] - training case
+        position_ids_expanded = position_ids.unsqueeze(-1)  # [batch, seq_len, 1]
+
     cos_selected = torch.gather(cos_expanded, 1, position_ids_expanded.expand(-1, -1, cos.shape[-1]))
     sin_selected = torch.gather(sin_expanded, 1, position_ids_expanded.expand(-1, -1, sin.shape[-1]))
     # Now: [batch, seq_len, head_dim]
@@ -494,9 +531,6 @@ def apply_rotary_pos_emb_xdrope(q, k, cos, sin, position_ids, xdrope_section, ou
     sin_selected = sin_selected.reshape(batch_size, seq_len, x_dim, section_size)
 
     # For XD RoPE: we need to handle the xdrope_section pattern
-    # xdrope_section = [16, 16, 16, 16] means we have 4 sections, each of size 16 in the original design
-    # But our section_size is 32, so we need to interpret this correctly
-
     # The original xdrope_section seems to be a ratio, not absolute size
     # Let's normalize and use it to determine the pattern
     total_ratio = sum(xdrope_section)  # 64
